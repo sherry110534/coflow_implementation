@@ -7,6 +7,11 @@ from mininet.topo import Topo
 from mininet.util import dumpNodeConnections
 import logging
 import os
+import random
+import time
+
+COFLOW_NUM = 100
+MAX_FLOW_NUM = 20
 
 logging.basicConfig(filename='./fattree.log', level=logging.INFO)
 logger = logging.getLogger(__name__)
@@ -97,7 +102,6 @@ class Fattree(Topo):
             cmd = "sudo ovs-vsctl set bridge %s protocols=OpenFlow13" % sw
             os.system(cmd)
 
-
 def iperfTest(net, topo):
     logger.debug("Start iperfTEST")
     h1000, h1015, h1016 = net.get(topo.HostList[0], topo.HostList[14], topo.HostList[15])
@@ -111,42 +115,60 @@ def iperfTest(net, topo):
     #iperf Client
     h1016.cmdPrint('iperf -c ' + h1000.IP() + ' -u -t 10 -i 1 -b 100m')
     h1016.cmdPrint('iperf -c ' + h1015.IP() + ' -u -t 10 -i 1 -b 100m')
-
     
 def pingTest(net):
     logger.debug("Start Test all network")
-    net.pingAll()
+    return net.pingAll()
 
-def createTopo():
-    logging.debug("LV1 Create Fattree")
-    topo = Fattree(4, 2) # pod = 4, density = 2
-    topo.createTopo()
-    topo.createLink(bw_c2a=0.2, bw_a2e=0.1, bw_h2a=0.05)
 
-    logging.debug("LV1 Start Mininet")
-    CONTROLLER_IP = "127.0.0.1"
-    CONTROLLER_PORT = 6653
-    net = Mininet(topo=topo, link=TCLink, controller=None, autoSetMacs=True, autoStaticArp=False)
-    net.addController('controller', controller=RemoteController,ip=CONTROLLER_IP, port=CONTROLLER_PORT)
-    net.start()
-
-    '''
-        Set OVS's protocol as OF13
-    '''
-    topo.set_ovs_protocol_13()
-
-    logger.debug("LV1 dumpNode")
-
-    dumpNodeConnections(net.hosts) # print all connection relationship
-    # pingTest(net)
-    # iperfTest(net, topo)
-
-    CLI(net)
-    net.stop()
 
 if __name__ == '__main__':
     setLogLevel('info')
     if os.getuid() != 0:
         logger.debug("You are NOT root")
     elif os.getuid() == 0:
-        createTopo()
+        logging.debug("LV1 Create Fattree")
+        topo = Fattree(4, 2) # pod = 4, density = 2
+        topo.createTopo()
+        topo.createLink(bw_c2a=0.2, bw_a2e=0.1, bw_h2a=0.05)
+
+        logging.debug("LV1 Start Mininet")
+        CONTROLLER_IP = "127.0.0.1"
+        CONTROLLER_PORT = 6653
+        net = Mininet(topo=topo, link=TCLink, controller=None, autoSetMacs=True, autoStaticArp=False)
+        net.addController('controller', controller=RemoteController,ip=CONTROLLER_IP, port=CONTROLLER_PORT)
+        net.start()
+
+        topo.set_ovs_protocol_13() # Set OVS's protocol as OF13
+        logger.debug("LV1 dumpNode")
+
+        dumpNodeConnections(net.hosts) # print all connection relationship
+        # check all host connect
+        drop = 100
+        while(1):
+            if(drop == 0):
+                break
+            drop = pingTest(net)
+        # open wireshark
+        for i in range(len(Fattree.HostList)/2, len(Fattree.HostList)):
+            print 'open wireshark in ', Fattree.HostList[i]
+            tmp = net.get(Fattree.HostList[i])
+            tmp.cmd('wireshark &')
+
+        time.sleep(100)
+        print 'start to create coflow'
+        # create coflow 
+        for i in range(COFLOW_NUM):
+            flow_num = random.randint(1, MAX_FLOW_NUM) # determine the flow number in a coflow
+            dst = net.get(random.sample(Fattree.HostList[len(Fattree.HostList)/2: len(Fattree.HostList)], 1)[0])
+            dst_ip = dst.IP()
+            for j in range(flow_num): # random choose flow_num host to send data
+                src = net.get(random.sample(Fattree.HostList[0: len(Fattree.HostList)/2], 1)[0])
+                src_ip = src.IP()
+                print 'from ', src_ip, ' to ', dst_ip
+                print 'coflow id: ', i
+                tmp_cmd = 'python TCP_sender.py ' + str(src_ip)  + ' ' + str(dst_ip) + ' ' + str(i)
+                result = src.cmd(tmp_cmd)
+                print result
+        CLI(net)
+        net.stop()
